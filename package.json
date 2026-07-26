@@ -1,0 +1,9 @@
+{
+  "name": "discord-vanity-sniper",
+  "version": "1.0.0",
+  "description": "High-performance Discord vanity URL sniper in Python",
+  "scripts": {
+    "start": "python run.py",
+    "probe": "python probe.py"
+  }
+}

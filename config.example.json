@@ -1,0 +1,16 @@
+{
+  "token": "MAIN_ACCOUNT_TOKEN",
+  "channelId": "CHANNEL_ID_FOR_LOGS",
+  "serverId": "TARGET_SERVER_ID",
+  "userToDm": "USER_ID_TO_DM_ON_SUCCESS",
+  "password": "MAIN_ACCOUNT_DISCORD_PASSWORD",
+  "webhookUrl": "https://discord.com/api/webhooks/...",
+  "monitorGuilds": [
+    "GUILD_ID_TO_MONITOR_1",
+    "GUILD_ID_TO_MONITOR_2"
+  ],
+  "poolSize": 4,
+  "proxyLessGateways": 5,
+  "controlChannelId": "CHANNEL_ID_FOR_SNIPER_COMMANDS",
+  "controllerPassword": "YOUR_ADMIN_PASSWORD"
+}
