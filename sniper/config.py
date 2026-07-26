@@ -8,11 +8,6 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 
-class ScoutAccount(TypedDict):
-    token: str
-    label: str
-
-
 class Config(TypedDict, total=False):
     token: str
     channelId: str
@@ -23,8 +18,6 @@ class Config(TypedDict, total=False):
     monitorGuilds: list[str]
     poolSize: int
     proxyLessGateways: int
-    controlChannelId: str
-    controllerPassword: str
 
 
 _SNOWFLAKE_RE = re.compile(r"^\d{17,20}$")
@@ -49,10 +42,4 @@ def load_config(path: Path) -> Config:
         if not _SNOWFLAKE_RE.match(gid):
             raise ValueError(f'Invalid guild ID in monitorGuilds: "{gid}"')
 
-    for s in raw.get("scouts", []):
-        if not s.get("token") or "." not in s["token"]:
-            raise ValueError(f'Scout "{s.get("label", "?")}" has an invalid token.')
-        if not s.get("label"):
-            raise ValueError("Each scout must have a label.")
-
-    return raw  # type: ignore[return-value]
+    return raw

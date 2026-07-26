@@ -9,12 +9,11 @@ run.py                       — entry point, wires everything together
 sniper/
 ├── __init__.py
 ├── config.py                — config loader with validation
-├── http2.py                 — SessionPool: discord.py HTTPClient wrapper
+├── http.py                  — CurlSession: curl_cffi HTTP pool (Cloudflare bypass via TLS fingerprint)
 ├── mfa.py                   — MfaManager: auto-refreshes MFA tickets (10s)
 ├── vanity.py                — VanityOps: claim / delete / probe
 ├── sniper.py                — SniperEngine: drop detection → claim pipeline
-├── multigate.py             — MultiGatewayEngine: N× raw WS connections
-├── controller.py            — Discord selfbot control (/commands in DMs)
+├── multigate.py             — MultiGatewayEngine: N× raw WS connections (websockets library)
 ├── cli.py                   — terminal REPL (same commands)
 ├── webhook.py               — Discord webhook embed sender
 ├── logger.py                — colorful timestamped logging
@@ -30,15 +29,13 @@ pip install -r requirements.txt
 python run.py
 ```
 
-Then either:
-- **Discord**: DM the selfbot `/login <password>` then `/start`
-- **Terminal**: Type `/start` in the running CLI
+Then use the terminal CLI: `/start`
 
 ## Detection flow
 
 ```
        ┌─────────────────────┐
-       │  Discord Gateway ←──│── raw WebSocket (no discord.py)
+       │  Discord Gateway ←──│── raw WebSocket (websockets library)
        │  GUILD_UPDATE       │
        │  GUILD_CREATE       │
        └──────┬──────────────┘
@@ -51,32 +48,30 @@ Then either:
        SniperEngine
     ┌─── fires detection webhook
     │─── MfaManager.get_token()
-    │─── SessionPool.claim_vanity()
-    │─── fires success/fail webhook
-    └─── DMs the configured user
+    │─── CurlSession.claim_vanity()
+    └─── fires success/fail webhook
 ```
 
 ## Detection
 
-- Raw WebSocket to `wss://gateway.discord.gg/?v=9&encoding=json`
+- Raw WebSocket to `wss://gateway.discord.gg/?v=10&encoding=json`
 - No HTTP polling — Discord pushes `GUILD_UPDATE` events
 - Multiple concurrent WS connections (configurable, default 3) — first to fire wins
-- Latency: ~40ms WebSocket RTT + ~450ms HTTP claim = ~490ms total
+- Uses `curl_cffi` with Chrome 110 TLS fingerprint to bypass Cloudflare
 
 **Limitation:** Discord does NOT send `GUILD_UPDATE` to the user who made the change. You need a **scout account** (different token) in the target guild to receive events about changes made by your main account.
 
 ## Claiming
 
-- Uses discord.py's `HTTPClient` (avoids Cloudflare)
+- Uses `curl_cffi` (TLS fingerprint: Chrome 110) — bypasses Cloudflare
 - `PATCH /guilds/{id}/vanity-url` with `X-Discord-MFA-Authorization` header
 - MFA token auto-refreshed every 10s (probe → ticket → password → token)
-- Claim latency: ~450ms
+- No discord.py dependency
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `/login <password>` | Authenticate (whitelist-based) |
 | `/status` | Sniper state, MFA status, gateways |
 | `/start` | Start gateway connections |
 | `/stop` | Stop gateways |
@@ -88,8 +83,6 @@ Then either:
 | `/watched` | List monitored guilds |
 | `/claim <code>` | Manually claim a vanity |
 | `/exit` | Shutdown |
-
-Commands work in DMs to the selfbot, in the configured `controlChannelId`, or in the terminal CLI.
 
 ## Config
 
@@ -104,8 +97,6 @@ Commands work in DMs to the selfbot, in the configured `controlChannelId`, or in
 | `monitorGuilds` | List of guild IDs to watch for drops |
 | `poolSize` | HTTP client pool size (default 4) |
 | `proxyLessGateways` | Number of WS connections (default 3) |
-| `controlChannelId` | Channel where /commands work (optional) |
-| `controllerPassword` | Password for `/login` auth |
 
 ## Disclaimer
 

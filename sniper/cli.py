@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import time
 from typing import Any
 
+from .http import CurlSession
 from .logger import log
 
 
@@ -17,19 +17,24 @@ class SniperCLI:
         multigate: Any,
         mfa: Any,
         vanity: Any,
-        client: Any,
+        http: CurlSession,
         cfg: dict[str, Any],
     ) -> None:
         self._sniper = sniper
         self._multigate = multigate
         self._mfa = mfa
         self._vanity = vanity
-        self._client = client
+        self._http = http
         self._cfg = cfg
         self._running = True
+        self._known_guilds: list[dict[str, Any]] = []
+        self._known_user: str = ""
 
     async def run(self) -> None:
-        log("CLI active. Type `/help` for commands.")
+        me = await self._http.get_me()
+        self._known_user = me.get("username", "?") if isinstance(me, dict) else "?"
+        self._known_guilds = await self._http.get_guilds()
+        log(f"CLI active ({self._known_user}). Type /help for commands.")
         loop = asyncio.get_event_loop()
         while self._running:
             try:
@@ -66,6 +71,12 @@ class SniperCLI:
     def _p(self, msg: str) -> None:
         log(msg)
 
+    def _get_guild_name(self, gid: str) -> str:
+        for g in self._known_guilds:
+            if g.get("id") == gid:
+                return g.get("name", "?")
+        return gid
+
     async def _cmd_help(self, args: list[str]) -> None:
         self._p(
             "Commands:"
@@ -77,8 +88,7 @@ class SniperCLI:
     async def _cmd_status(self, args: list[str]) -> None:
         s = self._sniper
         mg = self._multigate
-        target = self._client.get_guild(int(self._cfg["serverId"]))
-        target_name = target.name if target else self._cfg["serverId"]
+        target_name = self._get_guild_name(self._cfg["serverId"])
         self._p(
             f"Sniper: {'ON' if s.sniper_enabled else 'OFF'}  "
             f"Claimed: {s.has_successfully_sniped}  "
@@ -139,12 +149,20 @@ class SniperCLI:
         self._p(f"Stopped monitoring {gid}.")
 
     async def _cmd_guilds(self, args: list[str]) -> None:
-        guilds = self._client.guilds or []
+        guilds = self._known_guilds
+        if not guilds:
+            guilds = await self._http.get_guilds()
+            self._known_guilds = guilds
+        if not guilds:
+            self._p("No guilds.")
+            return
         self._p(f"Guilds ({len(guilds)}):")
         for g in guilds:
-            vc = getattr(g, "vanity_url_code", None) or ""
+            gid = g.get("id", "?")
+            name = g.get("name", "?")
+            vc = g.get("vanity_url_code") or ""
             tag = f" discord.gg/{vc}" if vc else ""
-            self._p(f"  {g.id} — {g.name}{tag}")
+            self._p(f"  {gid} \u2014 {name}{tag}")
 
     async def _cmd_watched(self, args: list[str]) -> None:
         watched = self._cfg.get("monitorGuilds", [])
@@ -153,8 +171,7 @@ class SniperCLI:
             return
         self._p(f"Monitored ({len(watched)}):")
         for gid in watched:
-            g = self._client.get_guild(int(gid))
-            self._p(f"  {gid} — {g.name if g else '?'}")
+            self._p(f"  {gid} \u2014 {self._get_guild_name(gid)}")
 
     async def _cmd_claim(self, args: list[str]) -> None:
         if not args:
@@ -165,6 +182,8 @@ class SniperCLI:
             self._p("MFA not ready.")
             return
         self._p(f"Claiming {code}...")
+
+        import time
         start = time.perf_counter()
         try:
             result = await self._vanity.claim(code)

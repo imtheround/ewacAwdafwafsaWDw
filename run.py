@@ -1,4 +1,4 @@
-"""Discord Vanity Sniper — gateway detection + control CLI."""
+"""Discord Vanity Sniper — raw WebSocket detection + CLI control."""
 
 from __future__ import annotations
 
@@ -8,12 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from sniper.config import load_config
-from sniper.http2 import SessionPool
+from sniper.http import CurlSession
 from sniper.mfa import MfaManager
 from sniper.vanity import VanityOps
 from sniper.sniper import SniperEngine
 from sniper.multigate import MultiGatewayEngine
-from sniper.controller import SniperController
 from sniper.cli import SniperCLI
 from sniper.logger import log, log_error
 
@@ -27,20 +26,14 @@ async def amain() -> None:
     cfg = load_config(config_path)
     log("Config loaded.")
 
-    pool_size = cfg.get("poolSize", 4)
-    claim_pool = SessionPool(cfg["token"], pool_size)
-    log(f"Claim pool: {pool_size} h2 sessions")
+    http = CurlSession(cfg["token"], cfg.get("poolSize", 4))
+    log(f"HTTP pool: {http.count} curl_cffi sessions")
 
-    mfa = MfaManager(claim_pool, cfg.get("password", ""))
-    vanity = VanityOps(claim_pool, mfa, cfg["serverId"])
-
-    from discord import Client as DiscordClient
-    client = DiscordClient()
+    mfa = MfaManager(http, cfg.get("password", ""))
+    vanity = VanityOps(http, mfa, cfg["serverId"])
 
     sniper = SniperEngine(
-        client, vanity,
-        cfg["channelId"], cfg["serverId"],
-        cfg["webhookUrl"], cfg["userToDm"],
+        vanity, cfg["channelId"], cfg["webhookUrl"], http,
     )
 
     multigate = MultiGatewayEngine(cfg["token"], cfg.get("proxyLessGateways", 5))
@@ -52,34 +45,16 @@ async def amain() -> None:
 
     multigate.on_vanity_drop(on_drop)
 
-    controller = SniperController(client, sniper, multigate, mfa, vanity, cfg)
-    controller.register()
+    cli = SniperCLI(sniper, multigate, mfa, vanity, http, cfg)
 
-    cli = SniperCLI(sniper, multigate, mfa, vanity, client, cfg)
+    mfa.start()
+    log("MFA refresh started (10s)")
 
-    @client.event
-    async def on_ready() -> None:
-        tag = str(client.user)
-        log(f"Logged in as {tag}")
+    log(f"Starting {cfg.get('proxyLessGateways', 5)} gateways...")
+    asyncio.create_task(multigate.start())
 
-        for g in client.guilds:
-            if g.vanity_url_code and "VANITY_URL" in (g.features or []):
-                log(f"  Tier 3: {g.id} | `{g.vanity_url_code}`")
-
-        mfa.start()
-        log("MFA refresh started (10s)")
-
-        log(f"Starting {cfg.get('proxyLessGateways', 5)} gateways...")
-        asyncio.create_task(multigate.start())
-
-        log("Sniper ready.")
-
-    log("Logging in...")
-    await asyncio.gather(
-        client.start(cfg["token"]),
-        cli.run(),
-        return_exceptions=True,
-    )
+    log("Sniper ready. CLI active.")
+    await cli.run()
 
 
 def main() -> None:

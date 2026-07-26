@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import time
-import asyncio
-from typing import Any, TYPE_CHECKING
+from typing import Any
 
-if TYPE_CHECKING:
-    from .vanity import VanityOps
-
+from .http import CurlSession
+from .vanity import VanityOps
 from .webhook import send_webhook, send_detection_webhook
-from .util import now_ms
 from .logger import log, log_error
 
 
@@ -18,33 +15,18 @@ class SniperEngine:
     sniper_enabled: bool = True
     has_successfully_sniped: bool = False
     request_in_flight: bool = False
-    autokick_enabled: bool = False
 
     def __init__(
         self,
-        client: Any,  # discord.Client
         vanity_ops: VanityOps,
         channel_id: str,
-        server_id: str,
         webhook_url: str,
-        user_to_dm: str,
+        http: CurlSession | None = None,
     ) -> None:
-        self._client = client
         self._ops = vanity_ops
         self._channel_id = channel_id
-        self._server_id = server_id
         self._webhook_url = webhook_url
-        self._user_to_dm = user_to_dm
-
-    def attach(self) -> None:
-        """Bind WebSocket backup handlers."""
-        @self._client.event
-        async def on_guild_update(before: Any, after: Any) -> None:
-            await self._on_guild_update(before, after)
-
-        @self._client.event
-        async def on_guild_delete(guild: Any) -> None:
-            await self._on_guild_delete(guild)
+        self._http = http
 
     async def on_drop(
         self,
@@ -54,7 +36,6 @@ class SniperEngine:
         scout_label: str | None = None,
         source: str | None = None,
     ) -> None:
-        """Called by detection sources when a vanity drops."""
         if not self.sniper_enabled or self.request_in_flight:
             return
         if self.has_successfully_sniped:
@@ -62,23 +43,6 @@ class SniperEngine:
             return
 
         await self._fire_claim(guild_id, code, detected_at, scout_label=scout_label, source=source)
-
-    # ── internals ──────────────────────────────────────────────────
-
-    async def _on_guild_update(self, old: Any, new: Any) -> None:
-        old_code = getattr(old, "vanity_url_code", None)
-        new_code = getattr(new, "vanity_url_code", None)
-        if old_code == new_code or not old_code:
-            return
-
-        log(f"WS: Vanity changed — `{old_code}` dropped (now: `{new_code or 'none'}`)")
-        await self.on_drop(str(new.id), old_code, time.perf_counter(), source="ws")
-
-    async def _on_guild_delete(self, guild: Any) -> None:
-        code = getattr(guild, "vanity_url_code", None)
-        self._send_channel(f"*Vanity URL `{code}` was deleted at {now_ms()}*")
-        if code:
-            await self.on_drop(str(guild.id), code, time.perf_counter(), source="ws")
 
     async def _fire_claim(
         self,
@@ -123,36 +87,21 @@ class SniperEngine:
                     "fields": [
                         {"name": "Detection Speed", "value": f"`{detection_ms}ms`", "inline": True},
                         {"name": "Claim Time", "value": f"`{speed_str}s ({claim_ms}ms)`", "inline": True},
-                        {"name": "Total (detect → claim)", "value": f"`{total_ms}ms ({total_ms / 1000:.3f}s)`", "inline": False},
+                        {"name": "Total (detect \u2192 claim)", "value": f"`{total_ms}ms ({total_ms / 1000:.3f}s)`", "inline": False},
                     ],
                 })
-                await self._dm_owner(code, speed_str, detection_ms, total_ms)
+                if self._http:
+                    msg = (
+                        f"**Vanity Snipe Successful!**\n"
+                        f"\u25b8 **Vanity:** `{code}`\n"
+                        f"\u25b8 **Detection:** `{detection_ms}ms`\n"
+                        f"\u25b8 **Claim:** `{speed_str}s`\n"
+                        f"\u25b8 **Total:** `{total_ms}ms ({total_ms / 1000:.3f}s)`"
+                    )
+                    await self._http.send_message(int(self._channel_id), msg)
             else:
                 log_error(f'FAILED to claim "{code}": {result.error}')
         except Exception as exc:
             log_error(f"Claim attempt threw: {exc}")
         finally:
             self.request_in_flight = False
-
-    def _send_channel(self, msg: str) -> None:
-        try:
-            ch = self._client.get_channel(int(self._channel_id))
-            if ch and hasattr(ch, "send"):
-                asyncio.create_task(ch.send(msg))
-        except Exception:
-            pass
-
-    async def _dm_owner(self, vanity: str, speed: str, detection_ms: float, total_ms: int) -> None:
-        try:
-            user = await self._client.fetch_user(int(self._user_to_dm))
-            if user:
-                await user.send(
-                    f"🎯 **Vanity Snipe Successful!**\n\n"
-                    f"▸ **Vanity:** `{vanity}`\n"
-                    f"▸ **Detection:** `{detection_ms}ms`\n"
-                    f"▸ **Claim:** `{speed}s`\n"
-                    f"▸ **Total:** `{total_ms}ms ({total_ms / 1000:.3f}s)`\n"
-                    f"✅ Successfully claimed for your server!"
-                )
-        except Exception as exc:
-            log_error(f"Failed to DM owner: {exc}")

@@ -10,7 +10,5 @@
     "GUILD_ID_TO_MONITOR_2"
   ],
   "poolSize": 4,
-  "proxyLessGateways": 5,
-  "controlChannelId": "CHANNEL_ID_FOR_SNIPER_COMMANDS",
-  "controllerPassword": "YOUR_ADMIN_PASSWORD"
+  "proxyLessGateways": 5
 }
