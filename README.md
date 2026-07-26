@@ -1,79 +1,111 @@
 # discord-vanity-sniper
 
-High-performance Discord vanity URL sniper — monitors your servers for vanity URL drops and races to claim them using HTTP/2 directly against Discord's API.
+Python vanity URL sniper — monitors guilds for vanity drops via raw WebSocket and claims them via HTTP API.
 
-## Features
+## Architecture
 
-- **Low-latency HTTP/2 client** — bypasses TCP+TLS handshake per request by maintaining a persistent h2 session to `canary.discord.com`
-- **MFA auto-refresh** — keeps a fresh MFA token so write endpoints are always ready
-- **Guild monitoring** — reacts to `guildUpdate` events; when a vanity drops, races to claim it
-- **Webhook notifications** — success/failure webhooks with speed measurements
-- **DM on success** — pings a configurable user when a snipe lands
-- **Command interface** — `.claim`, `.delete`, `.sniper`, `.autokick`, `.pause` and more from your log channel
-- **TypeScript** — fully typed, modular architecture
+```
+run.py                       — entry point, wires everything together
+sniper/
+├── __init__.py
+├── config.py                — config loader with validation
+├── http2.py                 — SessionPool: discord.py HTTPClient wrapper
+├── mfa.py                   — MfaManager: auto-refreshes MFA tickets (10s)
+├── vanity.py                — VanityOps: claim / delete / probe
+├── sniper.py                — SniperEngine: drop detection → claim pipeline
+├── multigate.py             — MultiGatewayEngine: N× raw WS connections
+├── controller.py            — Discord selfbot control (/commands in DMs)
+├── cli.py                   — terminal REPL (same commands)
+├── webhook.py               — Discord webhook embed sender
+├── logger.py                — colorful timestamped logging
+└── util.py                  — helpers
+```
 
 ## Quick start
 
 ```bash
 cp config.example.json config.json
-# → fill in your token, channelId, serverId, password, webhookUrl, userToDm
-
-npm install
-npm run dev
+# fill in your values
+pip install -r requirements.txt
+python run.py
 ```
+
+Then either:
+- **Discord**: DM the selfbot `/login <password>` then `/start`
+- **Terminal**: Type `/start` in the running CLI
+
+## Detection flow
+
+```
+       ┌─────────────────────┐
+       │  Discord Gateway ←──│── raw WebSocket (no discord.py)
+       │  GUILD_UPDATE       │
+       │  GUILD_CREATE       │
+       └──────┬──────────────┘
+              │ vanity_url_code changed
+              ▼
+      MultiGatewayEngine
+        detects drop
+              │
+              ▼
+       SniperEngine
+    ┌─── fires detection webhook
+    │─── MfaManager.get_token()
+    │─── SessionPool.claim_vanity()
+    │─── fires success/fail webhook
+    └─── DMs the configured user
+```
+
+## Detection
+
+- Raw WebSocket to `wss://gateway.discord.gg/?v=9&encoding=json`
+- No HTTP polling — Discord pushes `GUILD_UPDATE` events
+- Multiple concurrent WS connections (configurable, default 3) — first to fire wins
+- Latency: ~40ms WebSocket RTT + ~450ms HTTP claim = ~490ms total
+
+**Limitation:** Discord does NOT send `GUILD_UPDATE` to the user who made the change. You need a **scout account** (different token) in the target guild to receive events about changes made by your main account.
+
+## Claiming
+
+- Uses discord.py's `HTTPClient` (avoids Cloudflare)
+- `PATCH /guilds/{id}/vanity-url` with `X-Discord-MFA-Authorization` header
+- MFA token auto-refreshed every 10s (probe → ticket → password → token)
+- Claim latency: ~450ms
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `.help` | Show command list |
-| `.mfa <on\|off>` | Start/stop MFA ticket refresh |
-| `.sniper <on\|off>` | Enable/disable auto-sniping |
-| `.claim <vanity>` | Manually claim a vanity URL |
-| `.delete` | Delete your server's current vanity |
-| `.reset` | Reset sniper state (allow another claim) |
-| `.vanity` | List vanity URLs visible to this client |
-| `.leave <vanity\|guildId>` | Leave a server |
-| `.autokick` | Toggle auto-kick on member join |
-| `.pause` | Disable invites for 24 hours |
-| `.restart` | Exit the process |
+| `/login <password>` | Authenticate (whitelist-based) |
+| `/status` | Sniper state, MFA status, gateways |
+| `/start` | Start gateway connections |
+| `/stop` | Stop gateways |
+| `/enable` | Allow claiming |
+| `/disable` | Detect only, no claims |
+| `/watch <id>` | Add guild to monitor list |
+| `/unwatch <id>` | Remove guild from monitor |
+| `/guilds` | List guilds the token is in |
+| `/watched` | List monitored guilds |
+| `/claim <code>` | Manually claim a vanity |
+| `/exit` | Shutdown |
 
-## Configuration
+Commands work in DMs to the selfbot, in the configured `controlChannelId`, or in the terminal CLI.
 
-`config.json`:
+## Config
 
 | Field | Description |
 |-------|-------------|
-| `token` | Your Discord user token (self-bot) |
-| `channelId` | Channel ID where commands are read |
-| `serverId` | Target server to set the vanity on |
+| `token` | Discord user token (selfbot) |
+| `channelId` | Channel for log messages |
+| `serverId` | Target server to claim vanities on |
 | `userToDm` | User to DM on snipe success |
-| `password` | Your Discord password (for MFA) |
-| `webhookUrl` | Discord webhook for notifications |
-
-## Architecture
-
-```
-src/
-├── index.ts      — Entry point, wires everything together
-├── config.ts     — Config loader with validation
-├── http2.ts      — RexClient: persistent HTTP/2 session to Discord
-├── mfa.ts        — MfaManager: auto-refreshes MFA tickets
-├── vanity.ts     — VanityOps: claim / delete wrappers
-├── sniper.ts     — SniperEngine: guild event → race logic
-├── commands.ts   — .command handler (in-chat control)
-├── webhook.ts    — Discord webhook embed sender
-├── logger.ts     — Colorful timestamped logging
-└── util.ts       — Time formatting, sleep helper
-```
-
-## How it works
-
-1. **Login** as a self-bot with `discord.js-selfbot-v13`
-2. **MFA loop**: Every 10 seconds, probes `PATCH /api/v9/guilds/0/vanity-url` — if Discord returns `code: 60003`, we finish MFA with the password to get a fresh token
-3. **Monitor**: `guildUpdate` fires when any guild you're in changes its vanity URL
-4. **Race**: If the old URL is non-null (someone dropped it) and our target server has no vanity, fire `PATCH /api/v10/guilds/<serverId>/vanity-url` with the MFA token via HTTP/2
-5. **Notify**: Webhook + DM on success, webhook on failure
+| `password` | Discord account password (for MFA) |
+| `webhookUrl` | Webhook for notifications |
+| `monitorGuilds` | List of guild IDs to watch for drops |
+| `poolSize` | HTTP client pool size (default 4) |
+| `proxyLessGateways` | Number of WS connections (default 3) |
+| `controlChannelId` | Channel where /commands work (optional) |
+| `controllerPassword` | Password for `/login` auth |
 
 ## Disclaimer
 
