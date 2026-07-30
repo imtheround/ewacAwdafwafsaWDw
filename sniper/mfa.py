@@ -13,9 +13,10 @@ from .logger import log, log_error
 
 
 class MfaManager:
-    def __init__(self, http: CurlSession, password: str) -> None:
+    def __init__(self, http: CurlSession, password: str, guild_id: int = 1531122377055015075) -> None:
         self._http = http
         self._password = password
+        self._guild_id = guild_id
         self._mfa_token: str | None = None
         self._task: asyncio.Task[None] | None = None
 
@@ -35,7 +36,7 @@ class MfaManager:
 
     async def refresh(self) -> None:
         try:
-            data = await self._http.mfa_probe()
+            data = await self._http.mfa_probe(self._guild_id)
             code = data.get("code", 0)
 
             if code == 200:

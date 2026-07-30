@@ -12,7 +12,8 @@ from curl_cffi.requests import AsyncSession
 
 from .logger import log_error
 
-API_BASE = "https://discord.com/api/v10"
+API_BASE = "https://canary.discord.com/api/v10"
+API_AUTH_BASE = "https://discord.com/api/v10"
 
 
 class CurlSession:
@@ -35,16 +36,22 @@ class CurlSession:
                 s.headers.update({
                     "Authorization": self._token,
                     "Content-Type": "application/json",
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.1130 Chrome/128.0.6613.186 Safari/537.36",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.1130 Chrome/128.0.6613.186 Electron/32.2.7 Safari/537.36",
                     "X-Super-Properties": "eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiRGlzY29yZCBDbGllbnQiLCJyZWxlYXNlX2NoYW5uZWwiOiJwdGIiLCJjbGllbnRfdmVyc2lvbiI6IjEuMC4xMTMwIiwib3NfdmVyc2lvbiI6IjEwLjAuMTkwNDUiLCJvc19hcmNoIjoieDY0IiwiYXBwX2FyY2giOiJ4NjQiLCJzeXN0ZW1fbG9jYWxlIjoidHIiLCJoYXNfY2xpZW50X21vZHMiOmZhbHNlLCJicm93c2VyX3VzZXJfYWdlbnQiOiJNb3ppbGxhLzUuMCAoV2luZG93cyBOVCAxMC4wOyBXaW42NDsgeDY0KSBBcHBsZVdlYktpdC81MzcuMzYgKEtIVE1MLCBsaWtlIEdlY2tvKSBkaXNjb3JkLzEuMC4xMTMwIENocm9tZS8xMjguMC42NjEzLjE4NiBFbGVjdHJvbi8zMi4yLjcgU2FmYXJpLzUzNy4zNiIsImJyb3dzZXJfdmVyc2lvbiI6IjMyLjIuNyIsIm9zX3Nka192ZXJzaW9uIjoiMTkwNDUiLCJjbGllbnRfYnVpbGRfbnVtYmVyIjozNjY5NTUsIm5hdGl2ZV9idWlsZF9udW1iZXIiOjU4NDYzLCJjbGllbnRfZXZlbnRfc291cmNlIjpudWxsfQ==",
+                    "X-Discord-Locale": "en-US",
+                    "X-Discord-Timezone": "America/New_York",
+                    "X-Debug-Options": "bugReporterEnabled",
+                    "Sec-Fetch-Dest": "empty",
+                    "Sec-Fetch-Mode": "cors",
+                    "Sec-Fetch-Site": "same-origin",
                 })
                 self._sessions.append(s)
         idx = self._index % self._size
         self._index += 1
         return self._sessions[idx]
 
-    async def _do(self, method: str, path: str, **kwargs: Any) -> tuple[int, Any]:
-        url = f"{API_BASE}{path}"
+    async def _do(self, method: str, path: str, base_url: str = API_BASE, **kwargs: Any) -> tuple[int, Any]:
+        url = f"{base_url}{path}"
         s = await self._get_session()
         r = await s.request(method, url, **kwargs)
         try:
@@ -66,7 +73,10 @@ class CurlSession:
         try:
             status, data = await self._do("PATCH", f"/guilds/{guild_id}/vanity-url",
                 json={"code": code},
-                headers={"X-Discord-MFA-Authorization": mfa_token},
+                headers={
+                    "X-Discord-MFA-Authorization": mfa_token,
+                    "Cookie": f"__Secure-recent_mfa={mfa_token}",
+                },
             )
             if status >= 400:
                 raise RuntimeError(f"HTTP {status}: {data}")
@@ -88,24 +98,24 @@ class CurlSession:
             log_error(f"delete: {exc}")
             raise
 
-    async def mfa_probe(self) -> dict[str, Any]:
+    async def mfa_probe(self, guild_id: int = 1531122377055015075) -> dict[str, Any]:
         try:
-            status, data = await self._do("PATCH", "/guilds/0/vanity-url", json={"code": "probe"})
+            status, data = await self._do("PATCH", f"/guilds/{guild_id}/vanity-url", json={"code": "probe"}, base_url=API_AUTH_BASE)
             return data
         except Exception as exc:
-            return {"code": 0, "error": str(exc)}
+            log_error(f"probe {guild_id}: {exc}")
+            return {"error": str(exc)}
 
     async def mfa_finish(self, ticket: str, password: str) -> dict[str, Any]:
         try:
-            status, data = await self._do("POST", "/mfa/finish", json={
-                "ticket": ticket, "mfa_type": "password", "data": password,
-            })
-            if status >= 400:
-                raise RuntimeError(f"HTTP {status}: {data}")
+            status, data = await self._do("POST", "/mfa/finish",
+                json={"ticket": ticket, "mfa_type": "password", "data": password},
+                base_url=API_AUTH_BASE,
+            )
             return data
         except Exception as exc:
             log_error(f"mfa_finish: {exc}")
-            raise
+            return {"error": str(exc)}
 
     async def send_message(self, channel_id: int, content: str) -> dict[str, Any]:
         try:
